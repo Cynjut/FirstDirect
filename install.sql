@@ -38,12 +38,10 @@ CREATE TABLE `contact` (
   `st` char(2) default '',
   `country` varchar(30) default '',
   `zip` varchar(10) default '',
-  `csr` varchar(30) default '',
   `completed` datetime default '0000-00-00 00:00:00',
   `reason` varchar(30) default '',
-  `requeue` datetime default '0000-00-00 00:00:00',
-  `reqcnt` int(1) NOT NULL default '0',
   `email` varchar(100) default '',
+  `origin` longtext default '',
   PRIMARY KEY  (`cid`,`subcode`,`clientnum`),
   FULLTEXT KEY `SELECTOR` (`csr`,`cid`,`subcode`,`phone`,`reason`)
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1;

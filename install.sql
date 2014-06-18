@@ -25,6 +25,7 @@ CREATE TABLE `contact` (
   `clientnum` varchar(32) NOT NULL default '',
   `phone` varchar(13) NOT NULL default '',
   `fax` varchar(13) default '',
+  `cid` varchar(15) NOT NULL default '',
   `subcode` varchar(10) NOT NULL default '',
   `fname` varchar(30) default '',
   `lname` varchar(30) default '',
@@ -43,18 +44,8 @@ CREATE TABLE `contact` (
   `requeue` datetime default '0000-00-00 00:00:00',
   `reqcnt` int(1) NOT NULL default '0',
   `email` varchar(100) default '',
-  PRIMARY KEY  (`subcode`,`clientnum`),
-  FULLTEXT KEY `SELECTOR` (`csr`,`subcode`,`phone`,`reason`)
-) ENGINE=MyISAM DEFAULT CHARSET=latin1;
-
-/*Table structure for table `donotcall` */
-
-DROP TABLE IF EXISTS `donotcall`;
-
-CREATE TABLE `donotcall` (
-  `phone` varchar(15) NOT NULL default '',
-  `reason` varchar(60) default NULL,
-  PRIMARY KEY  (`phone`)
+  PRIMARY KEY  (`cid`,`subcode`,`clientnum`),
+  FULLTEXT KEY `SELECTOR` (`csr`,`cid`,`subcode`,`phone`,`reason`)
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1;
 
 /*Table structure for table `import_headers` */
@@ -74,7 +65,7 @@ DROP TABLE IF EXISTS `mysql_auth`;
 CREATE TABLE `mysql_auth` (
   `username` varchar(25) NOT NULL default '',
   `passwd` varchar(25) default NULL,
-  `book` varchar(50) default '',
+  `cid` varchar(50) default '',
   `subcode` varchar(12) default '',
   `groups` varchar(25) default NULL,
   `chatmessage` varchar(255) default NULL,
@@ -120,7 +111,7 @@ CREATE TABLE `questrep` (
 DROP TABLE IF EXISTS `report`;
 
 CREATE TABLE `report` (
-  `abbr` varchar(8) NOT NULL default 'CSV' COMMENT 'Book Abbreviation',
+  `abbr` varchar(8) NOT NULL default 'CSV' COMMENT 'Campaign Abbreviation',
   `reportType` varchar(8) NOT NULL default 'CSV',
   `header` varchar(30) default NULL,
   `srcField` varchar(30) NOT NULL COMMENT 'Database Field',
@@ -143,19 +134,6 @@ CREATE TABLE `resp2` (
   `rtext` varchar(255) NOT NULL default '',
   `rother` char(1) default NULL,
   PRIMARY KEY  (`cid`,`qid`,`sid`,`rlabel`)
-) ENGINE=MyISAM DEFAULT CHARSET=latin1;
-
-/*Table structure for table `timezone` */
-
-DROP TABLE IF EXISTS `timezone`;
-
-CREATE TABLE `timezone` (
-  `areacode` char(3) NOT NULL default '800',
-  `statecode` char(2) NOT NULL default 'XX',
-  `utcoffset` int(10) NOT NULL default '-6',
-  `lower48` char(1) NOT NULL default 'Y',
-  `notes` varchar(250) default NULL,
-  PRIMARY KEY  (`areacode`)
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1;
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;

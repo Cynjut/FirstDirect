@@ -1,0 +1,776 @@
+#!/usr/bin/perl
+#
+# This program takes a series of records and prints them in a pleasing form.
+#
+
+use DBI;
+use DBD::mysql;
+#use Date::Manip;
+use DateTime::Format::MySQL;
+use Text::CSV;
+use textfix;
+
+$cid = $ARGV[0];
+$expfile = $ARGV[1];
+$subcode = $ARGV[2];
+$extractsdate = $ARGV[3];
+$extractedate = $ARGV[4];
+$extracttype = $ARGV[5];
+#print "Args $ARGV[0] $ARGV[1]  $ARGV[2] $ARGV[3] $ARGV[4] $ARGV[5]\n";
+
+if (length($cid) == 0) {
+    $cid = 'TST';
+    $topt = '-t';
+}
+if (length($subcode) == 0) {
+    $subcode = '';
+}
+if (length($extractsdate) == 0) {
+    $extractsdate = '';
+    $datechk = '';
+} else {
+    $datechk = "AND completed BETWEEN '$extractsdate 00:00:00' AND '$extractsdate 23:59:59'";
+    if (length($extractedate) > 5) {
+		$datechk = "AND completed BETWEEN '$extractsdate 00:00:00' AND '$extractedate 23:59:59'";
+    }
+}
+if (length($extracttype) == 0) {
+    $extracttype = 'comp';
+}
+
+$monname[1] = "JAN";
+$monname[2] = "FEB";
+$monname[3] = "MAR";
+$monname[4] = "APR";
+$monname[5] = "MAY";
+$monname[6] = "JUN";
+$monname[7] = "JUL";
+$monname[8] = "AUG";
+$monname[9] = "SEP";
+$monname[10] = "OCT";
+$monname[11] = "NOV";
+$monname[12] = "DEC";
+
+$qualifier[0] = "JR";
+$qualifier[1] = "SR";
+$qualifier[2] = "II";
+$qualifier[3] = "III";
+$qualifier[4] = "IV";
+$qualifier[5] = "V";
+$qualifier[6] = "VI";
+$qualifier[7] = "DDS";
+
+$limit = "";
+if ($topt eq '-t') {
+    $limit = "LIMIT 10";
+}
+
+
+( $sec, $min, $hr, $mday, $mon, $year, $wday, $yday, $isdst) = localtime();
+$lastcalldate = ($year % 10) * 1000 + $yday;
+
+$data_source = "DBI:mysql:database=services;host=192.168.100.1";
+$ctl_source = "DBI:mysql:database=services;host=192.168.100.1";
+$username = 'firstdirect';
+$password = 'fdpass01234';
+$dbh = DBI->connect($data_source, $username, $password);
+$ctl = DBI->connect($ctl_source, $username, $password);
+
+#
+# First, we grab the fields for the report out of the report database.
+# The report database includes all of the standard column names from the
+# question number, and TEXT fields (in the form of T_?, where ? is a
+# unique identifier).
+
+$statement = "SELECT * FROM report WHERE abbr = '$abbr' ORDER BY col ";
+$cth = $ctl->prepare($statement);
+if (!$cth) {
+    die "ctl>cth Error: " . $ctl->errstr . "\n";
+}
+if (!$cth->execute()) {
+    die "cth Error: " . $cth->errstr . "\n";
+}
+
+$maxcol = 0;
+$line_length = 3210;
+while ($fields = $cth->fetchrow_hashref()) {
+    if ($fields->{'transform'} eq 'LineLength') {
+		$line_length = $fields->{'length'};
+		if ($line_length < 1) {
+			$line_length = 3210;
+		}
+    } elsif ($fields->{'transform'} eq 'ThreeFiles') {
+#		print "Three Files for output\n";
+		$threefiles = 'Y';
+	} else {
+		$col = $fields->{'col'};
+		if ($col == 1) {
+			$reporttype = $fields->{'reportType'};
+		}
+		if ($col > $maxcol) {
+			$maxcol = $col;
+		}
+		$fldname = $fields->{'srcField'};
+		$fieldname[$col] = $fldname;
+		$headers{$fldname} = $fields->{'header'};
+		$fieldstr{$fldname} = $col;
+		$fieldlen{$fldname} = $fields->{'length'};
+#
+# In this block, we set up the things that some of the special transforms
+# need, like access to a new database or pulling data into a list from a
+# database that we need to access once.
+#
+		if (length($fields->{'transform'}) > 1) {
+			$transform{$fldname} = $fields->{'transform'};
+			if (length($fields->{'literal'}) > 0) {
+				$literal{$fldname} = $fields->{'literal'};
+			}
+			if ($transform{$fldname} eq 'BlankOnSame') {
+				$process_contactold = 'Yes';
+			}
+			if ($transform{$fldname} eq 'Validate') {
+				if (length($literal{$fldname}) >= 0) {
+					$validation{$fldname} = $literal{$fldname};
+			} else {
+				$validation{$fldname} = ':';
+			}
+			$db_col = $fldname;
+			$db_col =~ s/Q_//;
+			$statement = "SELECT cid,qid,rlabel FROM resp2 WHERE cid in ($cid) AND qid = '$db_col'";
+			$qth = $ctl->prepare($statement);
+			if (!$qth) {
+				die "ctl>qth Error: " . $ctl->errstr . "\n";
+			}
+			if (!$qth->execute()) {
+				die "qth Error: " . $qth->errstr . "\n";
+			}
+			while ($valid = $qth->fetchrow_hashref()) {
+				$rlabel = ',' . $valid->{'rlabel'};
+#		    	print "Rlabel = $rlabel\n";
+				$validation{$fldname} .= "$rlabel";
+			}
+#			print "CID = " . $cid . "\n";
+#			print "DB_Col = " . $db_col . "\n";
+#			print "Validation = " . $validation{$fldname} . "\n";
+			}
+		}
+    }
+}
+#
+# CSV files are called "*.csv", FIXED are "*.dat", and XML are "*.xml"
+#
+if ($reporttype eq "") {
+    die("Data error - no field 1 in definition");
+}
+
+$filetype = 'dat';
+if ($reporttype eq 'CSV') {
+    $filetype = 'csv';
+}
+if ($reporttype eq 'XML') {
+    $filetype = 'xml';
+}
+if ($threefiles eq 'Y') {
+    open (OUTFILEADD,">$expfile-add.txt");
+    open (OUTFILEREQ,">$expfile-req.txt");
+    open (OUTFILEKIL,">$expfile-inf.txt");
+} else {
+    open (OUTFILE,">$expfile.$filetype");
+}
+
+#
+# Right now, there are two types of reports: FIXED and CSV.
+# CSV reports have a header line, FIXED don't.
+# We've added a conditional field type caller "Err_Only".
+# Since this field will normally be listed at the end of the report,
+# we have to check if the "last" field is the "Err_Only" field and
+# if it is, change the way the report runs. We reduce the column count
+# which removes the last field from the report, and clear out the
+# fieldname if this column doesn't get printed.
+#
+if ($transform{$fieldname[$maxcol]} eq 'Err_Only' && $extracttype eq 'comp') {
+	$headers{$fieldname[$maxcol]} = '';
+	$maxcol -= 1;
+}
+
+if ($reporttype eq 'CSV') {
+	for ($i=1; $i <= $maxcol; $i++) {
+		$eol = "N";
+		if ($maxcol == $i) {
+			$eol = "Y";
+		}
+		if ($transform{$fieldname[$i]} eq 'Err_Only' && $extracttype eq 'comp') {
+			$headers{$fieldname[$i]} = '';
+		}
+		if (length($headers{$fieldname[$i]}) > 0) {
+			if ($threefiles eq 'Y') {
+			print OUTFILEADD makecsv($headers{$fieldname[$i]},$eol);
+			print OUTFILEREQ makecsv($headers{$fieldname[$i]},$eol);
+			print OUTFILEKIL makecsv($headers{$fieldname[$i]},$eol);
+		} else {
+			print OUTFILE makecsv($headers{$fieldname[$i]},$eol);
+			}
+		}
+    }
+}
+
+print "Exporting ";
+if ($limit ne '') {
+    print "the first 10 records of ";
+}
+print "$cid ($abbr) to file $expfile<BR>\n";
+
+if ($extracttype eq 'comp') {
+    $statement = "SELECT * FROM contact WHERE reason = 'complete'";
+}
+
+if ($extracttype eq 'errs') {
+    $statement = "SELECT * FROM contact WHERE reason NOT IN ('CALL','requeue','')";
+}
+
+if ($extracttype eq 'bads') {
+    $statement = "SELECT * FROM contact WHERE reason IN ('nothere','disconn','wrongnum')";
+}
+
+#
+# If we are looking for CALL records, they can't have completed dates.
+#
+if ($extracttype eq 'call') {
+    $statement = "SELECT * FROM contact WHERE reason IN ('CALL', 'requeue')";
+} else {
+    $statement .= " $datechk";
+}
+
+$statement .= " AND cid IN ($cid)";
+
+if ($subcode ne '') {
+    $statement .= " AND subcode LIKE '$subcode' ";
+}
+$statement .= " ORDER BY clientnum $limit;";
+print "Extracting for $statement<BR>\n";
+
+$sth = $dbh->prepare($statement);
+if (!$sth) {
+    die "dbh>sth Error: " . $dbh->errstr . "\n";
+}
+if (!$sth->execute()) {
+    die "sth Error: " . $sth->errstr . "\n";
+}
+
+while ($record = $sth->fetchrow_hashref()) {
+	#
+	# Process the client number for this record so that we get the right
+	# questrep data. Note that we reset the campaign ID to match the one from
+	# the contact record.  This avoids problems with multiple NEW records
+	# from different campaigns getting pulled into the reports.
+	#
+
+    $clientnum = $record->{'clientnum'};
+    $cid = $record->{'cid'};
+    $subfetch = "SELECT * FROM questrep WHERE cid = '$cid' AND clientnum = '$clientnum';";
+    $resph = $dbh->prepare($subfetch);
+    if (!$resph) {
+		die "dbh>resph Error: $dbh->errstr\n";
+    }
+    if (!$resph->execute()) {
+		die "resph Error: $resph->errstr\n";
+    }
+
+    while (@responses = $resph->fetchrow_array()) {
+		$qid = $responses[1];
+		$qresp{$qid} = $responses[3];
+		$qother{$qid} = $responses[4];
+#		print " QID = $qid, $qresp{$qid}\n";
+		$record->{'Q_'.$qid} = uc($qresp{$qid});
+		$record->{'Q_'.$qid.'other'} = uc($qother{$qid});
+    }
+#
+    $phone = $record->{'phone'};
+    $fax = $record->{'fax'};
+    $promo = $record->{'promo'};
+    $record->{'fname'} = uc($record->{'fname'});
+    $fname = $record->{'fname'};
+    $record->{'lname'} = uc($record->{'lname'});
+    $lname = $record->{'lname'};
+    $record->{'fullname'} = uc($record->{'fullname'});
+    $fullname = $record->{'fullname'};
+    $record->{'title'} = uc($record->{'title'});
+    $title = $record->{'title'};
+    $record->{'orgname'} = uc($record->{'orgname'});
+    $orgname = $record->{'orgname'};
+    $record->{'department'} = uc($record->{'department'});
+    $department = $record->{'department'};
+    $record->{'address'} = uc($record->{'address'});
+    $address = $record->{'address'};
+    $record->{'city'} = uc($record->{'city'});
+    $city = $record->{'city'} ;
+    $record->{'st'} = uc($record->{'st'});
+    $state = $record->{'st'};
+    $record->{'country'} = uc($record->{'country'});
+    $country = $record->{'country'};
+    $record->{'zipwhole'} = $record->{'zip'};
+    $zip = substr($record->{'zipwhole'},0,5);
+    $zipext = substr($record->{'zipwhole'},5,4);
+    $record->{'csr'} = uc($record->{'csr'});
+    $csr = $record->{'csr'};
+    $completed = $record->{'completed'};
+    $reason = $record->{'reason'};
+    if (index($record->{'email'},'@')<2) {
+		$record->{'email'} = "";
+    }
+    $record->{'email'} = lc($record->{'email'});
+    $email = $record->{'email'};
+    
+# Try to pull a first and last name out of the fullname.
+# First, strip off the common salutations.
+# Then, find a name qualifier and put it in the previous element.
+# Finally, pull the new last element off as lname, and everything else
+# is fname.
+#
+    if (length($fname) < 3 || length($lname) < 3) {
+#		print "Culling first and last from fullname = $fullname\n";
+		$fullname = uc($fullname);
+		$fullname =~ s/\.//g;
+		$fullname =~ s/^MRS //g;
+		$fullname =~ s/^MR //g;
+		$fullname =~ s/^DR //g;
+		$fullname =~ s/^MS //g;
+		@nameparts = split(" ",$fullname);
+		if (scalar(@nameparts) == 1) {
+			$fname = "NFN ";
+			$lname = $nameparts[0];
+		}	
+		if (scalar(@nameparts) == 2) {
+			$fname = $nameparts[0];
+			$lname = $nameparts[1];
+		}
+#
+# At this point, we have a name in more than 2 pieces.
+# We look for common extension (JR, etc.) and if we find them,
+# we build the last name one way, if we don't, we do it the other.
+#
+		if (scalar(@nameparts) > 2) {
+			foreach $qual (@qualifier) {
+#			print "Checking Qualifier $qual\n";
+			if ($nameparts[-1] eq $qual) {
+			    $nameparts[-2] .= ' ' . $nameparts[-1];
+				pop(@nameparts);
+			}
+	    }
+	    $lname = pop(@nameparts);
+	    $fname = "";
+	    for ($i=0; $i < scalar(@nameparts); $i++) {
+			$fname .= " " . $nameparts[$i];
+	    }
+	}
+	$record->{'lname'} = $lname;
+	$record->{'fname'} = $fname;
+    }
+
+#
+# We do whatever transform is required.  As the program grows, this
+# is where we will make the changes.
+#
+#   print "Transform = $key, $xform\n";
+#
+#   We have included a new global called "sel_string" for the "Selected"
+#   transform. This way, we can  modify the value of the $record->{$key}
+#   variable on every pass and still have the original data available,
+#   since 'Selected' is intended to be used over and over again.
+#
+    $sel_string = '';
+    while (($key,$xform) = each(%transform)) {
+	if ($xform eq 'Spaces') {
+	    $record->{$key} = spaces($record->{$key},$fieldlen{$key});
+	    $xform = "";
+	}
+	if ($xform eq 'REFUSED_On_NULL') {
+	    if (length($record->{$key}) < 1) {
+			$record->{$key} = 'REFUSED';
+	    }
+	    $xform = "FillWhite";
+	}
+	if ($xform eq 'ChooseOne') {
+	    $field_list = $literal{$key};
+	    while (length($field_list) > 1) {
+			($field, $rest) = split(",",$field_list);
+			$record->{$key} .= $qresp{$field};
+			$field_list = $rest;
+	    }
+	    $xform = "FillWhite";
+	}
+#
+#	Selected is weird because it uses the same data over and over,
+#	so we have to monkey around with the key in the report generator.
+#	At the end, we need to figure out the real data that goes with
+#	the selected key.
+#
+	if ($xform eq 'Selected') {
+	    if (length($sel_string) == 0) {
+			$sel_key = $key;
+			$sel_key =~ s/S[0-9][0-9]_//;
+			$sel_string = ',,,,,'.$record->{$sel_key};
+#	        print "Select String, Sel_Key = $sel_string $sel_key\n";
+	    }
+	    if (index($literal{$key},":") >= 0) {
+			($match_text, $indicator) = split(":",$literal{$key});
+	    } else {
+	    	$match_text = $literal{$key};
+			$indicator = 'T';
+	    }
+	    if (index($sel_string,$match_text) > 0) {
+			print "Match Text $match_text found\n";
+			$record->{$key} = $indicator;
+	    }
+	    $xform = "FillWhite";
+	}
+	if ($xform eq 'FieldList') {
+	    $field_list = $literal{$key};
+	    while (length($field_list) > 1) {
+			($field, $rest) = split(",",$field_list);
+			if (length($record->{$key}) > 0) {
+				$record->{$key} .= '.';
+			}
+			$record->{$key} .= $record->{$field};
+			$field_list = $rest;
+	    }
+	    $xform = "FillWhite";
+	}
+	if ($xform eq 'Name_Last,First') {
+	    $record->{$key}  = $record->{'lname'};
+	    $record->{$key} .= ',';
+	    $record->{$key} .= $record->{'fname'};
+	    if ($reporttype eq 'CSV') {
+			$xform = "";
+	    } else {
+			$xform = "FillWhite";
+	    }
+	}
+	if ($xform eq 'Prepend') {
+	    $record->{$key} = $literal{$key}.$record->{$key};
+	    if ($reporttype eq 'CSV') {
+			$xform = "";
+	    } else {
+			$xform = "FillWhite";
+	    }
+	}
+	if ($xform eq 'Append') {
+#	    print "Key = $key, Value = $record->{$key}\n";
+	    $record->{$key} = $record->{$key}.$literal{$key};
+	    if ($reporttype eq 'CSV') {
+			$xform = "";
+	    } else {
+			$xform = "FillWhite";
+	    }
+	}
+	if ($xform eq 'Concat') {
+#	    print "Key = $key, Value = $record->{$key}\n";
+	    $record->{$key} = $literal{$key}.$record->{$key};
+	    if ($reporttype eq 'CSV') {
+			$xform = "";
+	    } else {
+			$xform = "FillWhite";
+	    }
+	}
+	if ($xform eq 'Literal') {
+	    $record->{$key} = $literal{$key};
+	    if ($reporttype eq 'CSV') {
+			$xform = "";
+	    } else {
+			$xform = "FillWhite";
+	    }
+	}
+	if ($xform eq 'LiteralFilled') {
+	    if (length($record->{$literal}) > 0) {
+			$record->{$key} = '';
+	    }
+	    if ($reporttype eq 'CSV') {
+			$xform = "";
+	    } else {
+			$xform = "FillWhite";
+	    }
+	}
+	if ($xform eq 'LiteralNotFilled') {
+	    if (length($record->{$literal}) < 1) {
+			$record->{$key} = '';
+	    }
+	    if ($reporttype eq 'CSV') {
+			$xform = "";
+	    } else {
+			$xform = "FillWhite";
+	    }
+	}
+	if ($xform eq 'Y1N0') {
+	    if ($record->{$key} eq 'Y') {
+			$record->{$key} = '1';
+	    } else {
+			$record->{$key} = '0';
+	    }
+	}
+	if ($xform eq 'Err_Only') {
+	    if ($extracttype eq 'comp') {
+			$record->{$key} = '';
+	    }
+	}
+	if ($xform eq 'NULL_On_New') {
+	    if (index($clientnum,"N") >= 0) {
+			$record->{$key} = '';
+	    }
+	    if ($reporttype eq 'CSV') {
+			$xform = "";
+	    } else {
+			$xform = "StripZero";
+	    }
+	}
+	if ($xform eq 'New_Literal') {
+	    if (index($literal{$key},":") > 0) {
+			($p, $s, $a, $o) = split(":",$literal{$key});
+	    } else {
+			$p = 'A';
+			$s = 'R';
+			$a = 'K';
+			$o = 'M';
+	    }
+	    if ($reason eq 'complete') {
+			if (index($clientnum,"N") >= 0) {
+				$record->{$key} = $p;
+				if ($lastclient eq substr($clientnum,0,9)) {
+					$record->{$key} = $s;
+				}
+				$record->{'clientnum'} = "";
+			} else {
+				$record->{$key} = $o;
+			}
+	    } else {
+			$record->{$key} = $a;
+	    }
+	    $xform = "";
+	}
+	if ($xform eq 'Date') {
+	    $dformat = $literal{$key};
+	    if ($dformat eq '') {
+			$dformat = 'YYYY/MM/DD_hh:mm:ssAM';
+	    }
+	    $year = substr($completed,0,4);
+	    $yr = substr($completed,2,2);
+	    $month = substr($completed,5,2);
+	    $day = substr($completed,8,2);
+	    $hour = substr($completed,11,2);
+	    $minute = substr($completed,14,2);
+	    $second = substr($completed,17,2);
+#	    print "Date = $year:$yr:$month:$day:$hour:$minute:$second\n";
+	    if ($hour > 12) {
+			$after = "PM";
+	    } else {
+			$after = "AM";
+	    }
+	    $dformat =~ s/YYYY/$year/g;
+	    $dformat =~ s/YY/$yr/g;
+	    $dformat =~ s/MON/$monname[$month]/g;
+	    $dformat =~ s/MM/$month/g;
+	    $dformat =~ s/DD/$day/g;
+	    if (index($dformat,'AM') > 1 && $hour > 12) {
+			$hour -= 12;
+	    }
+	    $hour = fillzero($hour,2);
+	    $minute = fillzero($minute,2);
+	    $second = fillzero($second,2);
+	    $dformat =~ s/hh/$hour/g;
+	    $dformat =~ s/mm/$minute/g;
+	    $dformat =~ s/ss/$second/g;
+	    $dformat =~ s/AM/$after/g;
+	    print "Call Date = $dformat\n";
+	    $record->{$key} = $dformat;
+	    $xform = "";
+	}
+	if ($xform eq 'HHMMSS' || $xform eq 'HHMM' || $xform eq 'MMSS') {
+	    $dformat = $literal{$key};
+	    if (length($dformat) == 0) {
+			$dformat = $xform;
+	    }
+	    $mydur = $record->{$key};
+	    $hh = int($mydur / 3600);
+	    $hh = fillzero($hh,2);
+	    $mm = int(($mydur % 3600) / 60);
+	    $mm = fillzero($mm,2);
+	    $ss = int($mydur % 60);
+	    $ss = fillzero($ss,2);
+	    $dformat =~ s/HH/$hh/g;
+	    $dformat =~ s/MM/$mm/g;
+	    $dformat =~ s/SS/$ss/g;
+	    $record->{$key} = $dformat;
+	    $xform = "FillWhite";
+	}
+	if ($xform eq 'DigPref') {
+	    if (index($literal{$key},":") > 0) {
+			($digital, $print) = split(":",$literal{$key});
+	    } else {
+			if (length($literal{$key}) > 0) {
+				$digital = $literal{$key};
+				$print = '';
+			} else {
+				$digital = 'D';
+				$print = 'P';
+			}
+	    }
+	    if (length($email) > 0) {
+			$record->{$key} = $digital;
+	    } else {
+			$record->{$key} = $print;
+	    }
+	    $xform = "";
+	}
+	if ($xform eq 'StripLiteral' && length($record->{$key}) > 0) {
+	    $remove = $literal{$key};
+	    if ($remove eq '/') {
+			$remove = '\/';
+	    }
+	    $record->{$key} =~ s/$remove//g;
+#	    print "Key = '" . $record->{$key} . "' Remove = $remove\n";
+	}
+	if ($xform eq 'StripZero') {
+	    if ($key eq 'clientnum' && index($clientnum,'N') > 0) {
+			$record->{$key} = "";
+	    } else {
+			while (substr($record->{$key},0,1) eq '0') {
+				$record->{$key} = substr($record->{$key},1);
+			}
+			if (length($record->{$key}) < 1) {
+				$record->{$key} = '0';
+			}
+	    }
+	    $xform = "";
+	}
+	if ($xform eq 'FillZero') {
+	    if ($key eq 'clientnum' && index($clientnum,'N') > 0) {
+			$record->{$key} = "";
+	    } else {
+			$record->{$key} = fillzero($record->{$key},$fieldlen{$key});
+	    }
+	    $xform = "";
+	}
+	if ($xform eq 'Validate') {
+	    print "Validation key is $key\n";
+	    if (index($validation{$key},":") >= 0) {
+			($default, $search) = split(":",$validation{$key});
+	    } else {
+			$default = ' ';
+			$search = $validation{$key};
+	    }
+	    if (index($search,$record->{$key}) < 1) {
+			print "Search = $search for " . $record->{$key} . "\n";;
+			print "Change " . $record->{$key} . " to '$default'\n";
+
+			$record->{$key} = $default;
+	    }
+	    $xform = "FillWhite";
+	}
+	if ($xform eq 'FillWhite') {
+			$record->{$key} = fillwhite($record->{$key},$fieldlen{$key});
+			$xform = "";
+		}
+		if ($xform eq 'JustWhite') {
+			if (uc($literal{$key}) eq 'NLZ') {
+				while (substr($record->{$key},0,1) eq '0') {
+					$record->{$key} = substr($record->{$key},1);
+				}
+			}
+			$record->{$key} = justwhite($record->{$key},$fieldlen{$key});
+			print "	Record-Key = (".$record->{$key}.")\n";
+		}
+    }
+#
+# All field transformations are complete - time to output the record.
+#
+    if ($reporttype eq "CSV") {
+		for ($i=1; $i <= $maxcol; $i++) {
+			$eol = "N";
+			if ($maxcol == $i) {
+				$eol = "Y";
+			}
+			if (length($headers{$fieldname[$i]}) > 0) {
+				if ($threefiles eq 'Y') {
+					if (index($clientnum,"N") >= 0) {
+						print OUTFILEADD makecsv($record->{$fieldname[$i]},$eol);
+					} else {
+						print OUTFILEREQ makecsv($record->{$fieldname[$i]},$eol);
+					}
+				} else {
+					print OUTFILE makecsv($record->{$fieldname[$i]},$eol);
+				}
+				if ($eol eq "Y") {
+					$linecount += 1;
+				}
+			}
+		}
+    } elsif ($reporttype eq "FIXED") {
+#		print "Line Length  = $line_length\n";
+		$line = spaces($line_length);
+		foreach $fldname (@fieldname) {
+			if (length($fldname) > 0) {
+				substr($line,$fieldstr{$fldname}-1,$fieldlen{$fldname}) = substr($record->{$fldname},0,$fieldlen{$fldname});
+			}
+		}
+		$line = substr($line,0,$line_length);
+		if ($threefiles eq 'Y') {
+			if (index($clientnum,"N") >= 0) {
+				print OUTFILEADD "$line\n";
+			} else {
+				print OUTFILEREQ "$line\n";
+			}
+		} else {
+			print OUTFILE "$line\n";
+		}
+		$linecount += 1;
+	} else {
+	# For now, the default report is CSV. It will be XML at some point.
+		for ($i=1; $i <= $maxcol; $i++) {
+			$eol = "N";
+			if ($maxcol == $i) {
+				$eol = "Y";
+			}
+			if (length($headers{$fieldname[$i]}) > 0) {
+				if ($threefiles eq 'Y') {
+					if (index($clientnum,"N") >= 0) {
+						print OUTFILEADD makecsv($record->{$fieldname[$i]},$eol);
+					} else {
+						print OUTFILEREQ makecsv($record->{$fieldname[$i]},$eol);
+					}
+				} else {
+					print OUTFILE makecsv($record->{$fieldname[$i]},$eol);
+				}
+				if ($eol eq "Y") {
+					$linecount += 1;
+				}
+			}
+		}
+    }
+
+    $linecount += 1;
+    while (($key, $value) = each(%qresp)){
+		delete $qresp{$key};
+    }
+    while (($key, $value) = each(%qother)) {
+		delete $qother{$key};
+    }
+    while (($key, $value) = each(%record)){
+		delete $record{$key};
+    }
+}
+
+if ($threefiles eq 'Y') {
+    close(OUTFILEADD);
+    close(OUTFILEREQ);
+    close(OUTFILEKIL);
+} else {
+    close(OUTFILE);
+}
+$sth->finish();
+
+print "Export produced $linecount records\n";
+
+if ($threefiles ne 'Y') {
+    $zipper = "/usr/pkg/bin/zip $expfile-$lastcalldate.zip $expfile.$filetype";
+    $return = exec($zipper);
+}
+

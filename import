@@ -1,0 +1,368 @@
+#!/usr/pkg/bin/perl
+#
+
+use DBI;
+use DBD::mysql;
+use Text::CSV;
+use textfix;
+
+#
+$dbserver = '192.168.1.1';
+$user = 'firstdirect';
+$pass = 'FirstDirect01234';
+
+$replace_records = 'YOUBETCHA';
+
+open (TEXT,">output.txt");
+open (COMMAND,">command.sql");
+if ($#ARGV == -1) {
+    print "This is the Import Script for First Direct.\n\n";
+    print "Usage: ./import 'Name of Campaign' [import file name] [subcode]\n\n";
+    print "The campaign ID (IN QUOATATION MARKS) is required and will be used for all of the \n";
+    print "records imported into this campaign set.\n";
+    print "The import file name is optional and defaults to 'import.csv'.\n";
+    print "The subcode is optional and should only be used if the subcode ";
+    print "is not included in the original data.\n";
+    print "Exiting.\n";
+    print TEXT "This is the Import Script for ETS.\n\n";
+    print TEXT "Usage: ./import 'Name of Campaign' [import file name] [subcode] ['KEEPOLD|DELETEOLD'] ['PREPROC'] ['REFUSED']\n\n";
+    print TEXT "Exiting.\n";
+    exit(1);
+}
+
+if (length($cid = $ARGV[0]) == 0) {
+	$cid = 'TEST';
+}
+
+if (length($impfile = $ARGV[1]) == 0) {
+	$impfile = 'import.csv';
+}
+
+$keepold = 'N';
+$clearcontactold = 'N';
+if (length($subcode = $ARGV[2]) == 0) {
+	$subcode = 'T99';
+}
+
+$data_source = "DBI:mysql:database=services;host=$dbserver";
+$dbh = DBI->connect($data_source, $user, $pass);
+
+$statement = "SELECT * FROM import_headers";
+$sth = $dbh->prepare($statement);
+$retvals = $sth->execute;
+while ($fieldhash = $sth->fetchrow_hashref()) {
+    $label = $fieldhash->{'label'};
+    $field = $fieldhash->{'field'};
+    $dblabel{$label} = $field;
+#	print "Label = $label: Field = $dblabel{$label}\n";
+}
+
+
+$statement = "SELECT clientnum FROM contact WHERE cid = 'X' and fname = 'RANDOM' and lname = 'CLIENTNUMBER'";
+$sth = $dbh->prepare($statement);
+$retvals = $sth->execute;
+$clnthash = $sth->fetchrow_hashref();
+$nxtclient = $clnthash->{clientnum};
+$haveclient = 'N';
+
+
+$data_source = "DBI:mysql:database=services;host=$dbserver";
+$dbh = DBI->connect($data_source, $user, $pass);
+
+$statement = "SELECT qid,rlabel FROM resp2 WHERE cid = '$cid' AND rother = 'N' ORDER BY rlabel";
+$sth = $dbh->prepare($statement);
+$retvals = $sth->execute;
+while ($resphash = $sth->fetchrow_hashref()) {
+    $quest = "q_" . $resphash->{'qid'};
+    $resp = $resphash->{'rlabel'};
+    $valid_resp{$quest} .= "$resp,";
+#    print TEXT "Question = $quest\n" if ($debug);
+#    print TEXT "Response = $resp\n" if ($debug);
+#    print "Valid Responses for $quest are $valid_resp{$quest}\n" if ($debug);
+}
+
+print TEXT "Filename: $impfile\n";
+open (INFILE,"<$impfile");
+my $csv = Text::CSV->new;
+
+$debug = 1;
+$rec = 0;
+$reccount = 0;
+$haveclnt = 'N';
+#
+# Process the actual file.
+#
+while (<INFILE>) {
+#
+# We need to remove apostrophes and backslashes from all data
+#
+    $inline = fixfield($_);
+
+    print TEXT "$inline\n" if ($debug);
+
+    if ($csv->parse($inline)) {
+		my @field = $csv->fields;
+		my $count = 0;
+		print TEXT "Processing CSV Fields\n" if ($debug);
+#
+# First, we process the line with the Field names on it.  We know this is the 
+# first record since the fldname array entry for this column (count) is empty.
+#
+# If we have a "Q_..." field, we need to preload that field with with a 
+# questionnaire response.
+#
+# We use the field positions to set the outrec positions.  These aren't 
+# really positions, so much as they are a hash based on the output fields.
+#
+		for $column (@field) {
+			if (length($fldname[$count]) == 0) {
+				$column = lc(fixfield($column));
+				$fldname[$count] = $column;
+				if (substr($column,0,2) eq 'q_') {
+					$qfld_list{$column} = $count;
+					$redir[$count] = $column;
+				} else {
+					$redir[$count] = $dblabel{$column};
+					if ($redir[$count] eq 'clientnum') {
+						$haveclnt = 'Y';
+					}
+				}
+				print TEXT "Field: $redir[$count]\n" ;
+			} else {
+#
+# Other post process special cases
+#
+# No subcode was supplied on the program call, so we have to use the one out of
+# the original records.  
+#
+				if (length($subcode) == 0  && $redir[$count] eq 'promo') {
+					$subcode = $column;
+				}
+#
+# Set the outrec field to the column data.  The only exception is that the 
+# subcode is overridden by whatever we put in the subcode field.
+#
+				$outrec{$redir[$count]} = $column;
+			}
+			$count++;
+		}
+#
+#  All fields have now been set into the outrec variables (if that's
+# appropriate).
+#
+#
+		print TEXT "Processing promo\n" if ($debug);
+		if (length($outrec{'promo'}) == 0) {
+			$outrec{'promo'} = $subcode;
+		}
+#
+#  If we didn't find a clientnumber field, we need to make one up.
+#  Since they are our clientnumbers, they will always be 'N0' records.
+#  We store the clientnumber in the database in an easily manageable
+#  way (no N9 on the end) so that we don't have to jerk around with the
+#  it here before we use it.
+#
+#  All client numbers in the system are at least nine digits long, zero
+#  filled.  If there is a client number, we need to make sure its long 
+#  enough.
+#
+		if ($haveclnt eq 'N') {
+			$clientnum = $nxtclient++ . 'N0';
+		} elsif (length($outrec{'clientnum'}) < 9) {
+			$outrec{'clientnum'} = fillzero($outrec{'clientnum'},9);
+			$clientnum = $outrec{'clientnum'};
+		} else {
+			$clientnum = $outrec{'clientnum'};
+		}
+#
+# Let's clean up the US ZIP codes (they are either 5 or 9 digits).
+#
+		print TEXT "Processing ZIP\n" if ($debug);
+		if (length($outrec{'country'}) == 0) {  
+				$zip = numfield($outrec{'zip'});
+			while (length($zip) > 5 && length($zip) < 9) {
+				$zip = fillzero($zip,9);
+			}
+			while (length($zip) < 5) {
+				$zip = fillzero($zip,5);
+			}	
+		} else {
+			$zip = $outrec{'zip'};
+		}
+#
+# Let's process presets so that they match up with responses from the 
+# questionnaire manager.
+#
+		print TEXT "Processing Q_ Codes\n" if ($debug);
+		while (($key,$value) = each %qfld_list) {
+			print TEXT "Importing $key in column $value\n" if ($debug);
+			print TEXT "  Valid_Resp is ",$valid_resp{$key},"\n" if ($debug);
+			my @values = split(',', $valid_resp{$key});
+			$field_ok = 0;
+			foreach $val (@values) {
+				print TEXT "Valid Value is $val\n";
+				print TEXT "   Compared to ",$outrec{$key},"\n";
+				if (index($val,"$outrec{$key}") >= 0) {
+					print "Transformed " . $outrec{$key} . " to $val\n";
+					$outrec{$key} = $val;
+					$field_ok = 1;
+					last;
+				}
+			}
+			if ($field_ok == 0) {
+				print TEXT "Match not found for $key was $val\n";
+				$outrec{$key} = '';
+			}
+		}
+
+        if (length($outrec{'country'}) == 0) {  
+            $zip = numfield($outrec{'zip'});
+            while (length($zip) > 5 && length($zip) < 9) {
+                $zip = fillzero($zip,9);
+            }
+            while (length($zip) < 5) {
+                $zip = fillzero($zip,5);
+            }
+		} else {
+			$zip = $outrec{'zip'};
+		}
+
+
+#
+# We always import a fullname.
+#
+		if (length($fullname) < 2) {
+			$fullname = $fname . ' ' . $lname;
+		}
+		if ($fullname eq ' ') {
+			$fullname = '';
+		}
+	
+#
+# If there's no name, there shouldn't be a phone number.
+#
+		if (length($fullname) > 1) {
+			$phone = numfield($outrec{'phone'});
+			$fax   = numfield($outrec{'fax'});
+		}
+#
+# If we are loading up an old CSV file as a list, we need to make sure the 
+# goes in as a 'CALL' status record. If we are loading a list that actually
+# has 'reason' codes, then use those. Either way, 'reason' cannot be blank.
+#
+		if (length($outrec{'reason'}) < 1) {
+			$outrec{'reason'} = "CALL";
+		}
+
+#
+#
+#
+		$statement = "INSERT IGNORE INTO contact VALUES ('";
+		if ($replace_records eq 'YOUBETCHA') {
+			$statement = "REPLACE INTO contact VALUES ('";
+		}
+		$statement .= $clientnum; 
+		$statement .= "','".$phone;
+		$statement .= "','".$fax;
+		$statement .= "','".$outrec{'cid'};
+		$statement .= "','".$outrec{'promo'};
+		$statement .= "','".$fname;
+		$statement .= "','".$lname;
+		$statement .= "','".$fullname;
+		$statement .= "','".$outrec{'title'};
+		$statement .= "','".$outrec{'orgname'};
+		$statement .= "','".$outrec{'department'};
+		$statement .= "','".$outrec{'address'};
+		$statement .= "','".$outrec{'city'};
+		$statement .= "','".$outrec{'st'};
+		$statement .= "','".$outrec{'country'};
+		$statement .= "','".$zip;
+		$statement .= "',''";
+		$statement .= "',':.$outrec{'reason'};
+		$statement .= ",'".$outrec{'email'};
+		$statement .= ")";
+		if ($cid eq 'TEST') {
+			print COMMAND "$statement;\n";
+			$phone = '';
+		}
+		if ($phone ne '') {
+			$sth = $dbh->prepare($statement);
+			$retvals = $sth->execute;
+			$reccount += 1;
+			print TEXT "$statement\n";
+			print COMMAND "$statement;\n";
+			if (keys(%qfld_list) >  0) {
+				print TEXT "\nUploading new questrep data \n";
+				while (($key,$value) = each %qfld_list) {
+					$qid = substr($key,2);
+					print TEXT "Processing Q_$qid\n";
+					if ($outrec{$key} ne '') {
+						$statement = "REPLACE INTO questrep SET ";
+						$statement .= "cid  = '$cid', ";
+						$statement .= "qid  = '$qid', ";
+						$statement .= "sid  = '', ";
+						$statement .= "qresp  = '$outrec{$key}', ";
+						$statement .= "qother  = '', ";
+						$statement .= "phone  = '$phone', ";
+						$statement .= "clientnum  = '$clientnum' ";
+						$sth = $dbh->prepare($statement);
+						$retvals = $sth->execute;
+						print COMMAND "$statement;\n";
+						print TEXT "$statement\n";
+					}
+				}
+			}
+		} else {
+			print TEXT "$clientnum has no phone\n";
+		}
+#
+# Clear all of the variables for the next record
+#	
+		$outrec{'clientnum'} = ''; 
+		$clientnum = '';
+		$outrec{'promo'} = '';
+		$outrec{'fname'} = '';
+		$outrec{'lname'} = '';
+		$outrec{'fullname'} = '';
+		$fname = '';
+		$lname = '';
+		$fullname = '';
+		$outrec{'title'} = '';
+		$outrec{'orgname'} = '';
+		$outrec{'department'} = '';
+		$outrec{'address'} = '';
+		$outrec{'city'} = '';
+		$outrec{'st'} = '';
+		$outrec{'country'} = '';
+		$outrec{'email'} = '';
+		$outrec{'completed'} = '';
+		$outrec{'reason'} = 'CALL';
+		$phone = '';
+		$fax = '';
+		$zip = '';
+			if (keys(%qfld_list) >  0) {
+				while (($key,$value) = each %qfld_list) {
+					$outrec{$key} = '';
+				}
+			}
+		} else {
+		my $err = $csv->error_input;
+		print TEXT "parse() failed on argument: ", $err, "\n";
+    }
+}
+print TEXT "$reccount records processed $dncremoved do-not-calls removed.\n";
+print "$reccount processed, $dncremoved + $refremovedremoved.\n";
+
+if ($haveclnt eq 'N') {
+    $dbh->disconnect;
+    $data_source = "DBI:mysql:database=teleservices;host=$dbserver";
+    $dbh = DBI->connect($data_source, $user, $pass);
+    $nxtclient = $nxtclient + 1000 - ($nxtclient % 1000);
+    $statement = "UPDATE contact SET clientnum = '$nxtclient' WHERE cid = 'X'";
+    $sth = $dbh->prepare($statement);
+    $retvals = $sth->execute;
+}
+close(INFILE);
+close(COMMAND);
+$dbh->disconnect();
+

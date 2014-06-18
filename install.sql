@@ -13,38 +13,9 @@ MySQL - 5.0.45 : Database - teleservices
 /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
-CREATE DATABASE /*!32312 IF NOT EXISTS*/`teleservices` /*!40100 DEFAULT CHARACTER SET latin1 */;
+CREATE DATABASE /*!32312 IF NOT EXISTS*/`services` /*!40100 DEFAULT CHARACTER SET latin1 */;
 
-USE `teleservices`;
-
-/*Table structure for table `book` */
-
-DROP TABLE IF EXISTS `book`;
-
-CREATE TABLE `book` (
-  `book` varchar(100) NOT NULL default '',
-  `abbr` varchar(6) NOT NULL default '',
-  `lower48` varchar(6) NOT NULL default '',
-  `longtitle` varchar(80) default NULL,
-  `server` varchar(16) default NULL,
-  `estart` varchar(5) default '7.00',
-  `cstart` varchar(5) default '10.00',
-  `mstart` varchar(5) default '10.25',
-  `pstart` varchar(5) default '11.00',
-  `elunchb` varchar(5) default '11.15',
-  `clunchb` varchar(5) default '11.15',
-  `mlunchb` varchar(5) default '12.00',
-  `plunchb` varchar(5) default '13.00',
-  `elunche` varchar(5) default '12.00',
-  `clunche` varchar(5) default '13.00',
-  `mlunche` varchar(5) default '14.25',
-  `plunche` varchar(5) default '15.00',
-  `estop` varchar(5) default '14.25',
-  `cstop` varchar(5) default '15.15',
-  `mstop` varchar(5) default '17.00',
-  `pstop` varchar(5) default '23.75',
-  PRIMARY KEY  (`book`)
-) ENGINE=MyISAM DEFAULT CHARSET=latin1;
+USE `services`;
 
 /*Table structure for table `contact` */
 
@@ -72,11 +43,8 @@ CREATE TABLE `contact` (
   `requeue` datetime default '0000-00-00 00:00:00',
   `reqcnt` int(1) NOT NULL default '0',
   `email` varchar(100) default '',
-  `book` varchar(60) NOT NULL default '',
-  `extension` varchar(12) default NULL,
-  `uniqueid` varchar(80) default NULL,
-  PRIMARY KEY  (`book`,`clientnum`),
-  FULLTEXT KEY `SELECTOR` (`csr`,`book`,`phone`,`reason`)
+  PRIMARY KEY  (`subcode`,`clientnum`),
+  FULLTEXT KEY `SELECTOR` (`csr`,`subcode`,`phone`,`reason`)
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1;
 
 /*Table structure for table `donotcall` */
@@ -99,20 +67,6 @@ CREATE TABLE `import_headers` (
   PRIMARY KEY  (`label`)
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1;
 
-/*Table structure for table `log` */
-
-DROP TABLE IF EXISTS `log`;
-
-CREATE TABLE `log` (
-  `book` varchar(30) NOT NULL default '',
-  `phone` varchar(100) NOT NULL default '',
-  `clientnum` varchar(32) default NULL,
-  `csr` varchar(100) NOT NULL default '',
-  `eventTime` timestamp NOT NULL default CURRENT_TIMESTAMP on update CURRENT_TIMESTAMP,
-  `eventType` text NOT NULL,
-  `eventData` text NOT NULL
-) ENGINE=MyISAM DEFAULT CHARSET=latin1;
-
 /*Table structure for table `mysql_auth` */
 
 DROP TABLE IF EXISTS `mysql_auth`;
@@ -126,25 +80,6 @@ CREATE TABLE `mysql_auth` (
   `chatmessage` varchar(255) default NULL,
   `extension` varchar(10) default NULL,
   PRIMARY KEY  (`username`)
-) ENGINE=MyISAM DEFAULT CHARSET=latin1;
-
-/*Table structure for table `phonequeue` */
-
-DROP TABLE IF EXISTS `phonequeue`;
-
-CREATE TABLE `phonequeue` (
-  `fullname` varchar(50) default '',
-  `fname` varchar(30) default '',
-  `lname` varchar(30) default '',
-  `clientnum` varchar(32) NOT NULL default '',
-  `book` varchar(60) NOT NULL default '',
-  `phone` varchar(13) NOT NULL default '',
-  `ltime` int(1) NOT NULL default '0',
-  `requeue` datetime NOT NULL default '0000-00-00 00:00:00',
-  `reason` varchar(30) NOT NULL default '',
-  `subcode` varchar(10) NOT NULL default '',
-  `reqcnt` int(1) NOT NULL default '0',
-  PRIMARY KEY  (`reason`,`ltime`,`reqcnt`,`book`,`clientnum`)
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1;
 
 /*Table structure for table `quest2` */
@@ -208,17 +143,6 @@ CREATE TABLE `resp2` (
   `rtext` varchar(255) NOT NULL default '',
   `rother` char(1) default NULL,
   PRIMARY KEY  (`cid`,`qid`,`sid`,`rlabel`)
-) ENGINE=MyISAM DEFAULT CHARSET=latin1;
-
-/*Table structure for table `subquestion` */
-
-DROP TABLE IF EXISTS `subquestion`;
-
-CREATE TABLE `subquestion` (
-  `qid` varchar(30) default NULL,
-  `qnum` int(10) default NULL,
-  `ansnum` int(10) default NULL,
-  `anstext` varchar(60) default NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1;
 
 /*Table structure for table `timezone` */
